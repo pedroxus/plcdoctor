@@ -281,7 +281,9 @@ export default function Home() {
     const notes: string[] = [];
     if (pending.length) notes.push(`[El técnico ha subido a Adjuntos: ${pending.map((a) => a.name).join(", ")}]`);
     if (s.removed.length) notes.push(`[El técnico ha quitado de Adjuntos: ${s.removed.join(", ")}]`);
-    const userText = text || "He subido documentación nueva a Adjuntos.";
+    const onlyPhotos = pending.length > 0 && pending.every((a) => a.kind === "image");
+    const userText =
+      text || (onlyPhotos ? "Te paso una foto. Dime qué componente es y lo que veas relevante." : "He subido documentación nueva a Adjuntos.");
 
     const userMsg: ApiMessage = {
       role: "user",
