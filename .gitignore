@@ -1,0 +1,8 @@
+node_modules
+.next
+.env*
+!.env.example
+lib/prompt.generated.ts
+next-env.d.ts
+*.tsbuildinfo
+.vercel
