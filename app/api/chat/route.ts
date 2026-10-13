@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { checkAccess, getClient, MODEL } from "@/lib/server";
+import { checkAccess, FILES_BETA, getClient, MODEL } from "@/lib/server";
 import { SYSTEM_PROMPT } from "@/lib/prompt.generated";
 
 export const runtime = "nodejs";
@@ -39,7 +39,7 @@ export async function POST(req: Request) {
             output_config: { effort: "medium" },
             cache_control: { type: "ephemeral" },
             tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 3 }],
-            betas: ["server-side-fallback-2026-07-01"],
+            betas: ["server-side-fallback-2026-07-01", FILES_BETA],
             fallbacks: "default",
           });
 

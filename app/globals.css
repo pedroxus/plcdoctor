@@ -132,7 +132,7 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .thumb.pdf { font-size: 11px; font-weight: 800; }
 .item-body { flex: 1; min-width: 0; }
 .item-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.item-meta { font-size: 12.5px; color: var(--muted); }
+.item-meta { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
 .err { color: var(--red); font-size: 13px; }
 .item-actions { display: flex; gap: 8px; margin-top: 8px; }
 .item-actions button { flex: 1; }

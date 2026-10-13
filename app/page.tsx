@@ -29,6 +29,8 @@ interface Attachment {
   status: "uploading" | "ready" | "error";
   error?: string;
   fileId?: string;
+  data?: string;
+  mediaType?: string;
   text?: string;
   thumb?: string;
   sent: boolean;
@@ -107,13 +109,13 @@ function attachmentBlocks(a: Attachment): ApiBlock[] {
   if (a.kind === "text") {
     return [{ type: "document", title: a.name, source: { type: "text", media_type: "text/plain", data: a.text ?? "" } }];
   }
+  const source = a.fileId
+    ? { type: "file", file_id: a.fileId }
+    : { type: "base64", media_type: a.mediaType, data: a.data };
   if (a.kind === "pdf") {
-    return [{ type: "document", title: a.name, source: { type: "file", file_id: a.fileId } }];
+    return [{ type: "document", title: a.name, source }];
   }
-  return [
-    { type: "text", text: `Foto adjunta: ${a.name}` },
-    { type: "image", source: { type: "file", file_id: a.fileId } },
-  ];
+  return [{ type: "text", text: `Foto adjunta: ${a.name}` }, { type: "image", source }];
 }
 
 /* ---------- Iconos ---------- */
@@ -243,18 +245,26 @@ export default function Home() {
         let blob: Blob = file;
         let name = file.name;
         if (kind === "image") {
-          blob = await shrinkImage(file, 2000);
+          blob = await shrinkImage(file, 1568, 0.82);
           name = file.name.replace(/\.[^.]+$/, "") + ".jpg";
           const thumb = await blobToDataUrl(await shrinkImage(file, 160, 0.7));
           patchAttachment(id, { thumb, name, size: blob.size });
         }
         if (blob.size > MAX_UPLOAD) throw new Error(`Supera el máximo de ${formatSize(MAX_UPLOAD)}`);
+        const mediaType = kind === "pdf" ? "application/pdf" : "image/jpeg";
         const form = new FormData();
-        form.append("file", new File([blob], name, { type: kind === "pdf" ? "application/pdf" : "image/jpeg" }));
+        form.append("file", new File([blob], name, { type: mediaType }));
         const res = await fetch("/api/upload", { method: "POST", body: form, headers: headers() });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error ?? "Error al subir");
-        patchAttachment(id, { fileId: data.id, status: "ready" });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.id) {
+          patchAttachment(id, { fileId: data.id, status: "ready" });
+        } else {
+          if (res.status === 401) throw new Error(data.error ?? "Código de acceso incorrecto");
+          // Si la Files API no está disponible, el archivo viaja incrustado en el mensaje.
+          console.warn("Subida a la Files API fallida, se envía incrustado:", data.error);
+          const base64 = (await blobToDataUrl(blob)).split(",")[1];
+          patchAttachment(id, { data: base64, mediaType, status: "ready" });
+        }
       } catch (err) {
         patchAttachment(id, { status: "error", error: err instanceof Error ? err.message : "Error" });
       }

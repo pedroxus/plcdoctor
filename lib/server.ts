@@ -2,6 +2,9 @@ import Anthropic from "@anthropic-ai/sdk";
 
 export const MODEL = "claude-sonnet-5-5";
 
+// Cabecera de la Files API: se envía en la subida y en cada mensaje que referencia un archivo.
+export const FILES_BETA = "files-api-2025-04-14";
+
 let client: Anthropic | null = null;
 
 export function getClient(): Anthropic {

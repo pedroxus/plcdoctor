@@ -1,5 +1,5 @@
 import { toFile } from "@anthropic-ai/sdk";
-import { checkAccess, getClient } from "@/lib/server";
+import { checkAccess, FILES_BETA, getClient } from "@/lib/server";
 
 export const runtime = "nodejs";
 
@@ -18,8 +18,9 @@ export async function POST(req: Request) {
     if (!ALLOWED.includes(file.type)) {
       return Response.json({ error: `Formato no admitido: ${file.type || file.name}` }, { status: 400 });
     }
-    const uploaded = await getClient().files.upload({
+    const uploaded = await getClient().beta.files.upload({
       file: await toFile(Buffer.from(await file.arrayBuffer()), file.name, { type: file.type }),
+      betas: [FILES_BETA],
     });
     return Response.json({ id: uploaded.id });
   } catch (err) {
