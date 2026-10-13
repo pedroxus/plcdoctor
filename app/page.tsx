@@ -408,7 +408,10 @@ export default function Home() {
 
   /* ---------- Acceso ---------- */
 
-  if (auth && !auth.ok) {
+  // No se muestra nada de la app hasta saber si hace falta el código de acceso.
+  if (!auth) return <div className="login" />;
+
+  if (!auth.ok) {
     return (
       <LoginScreen
         onSubmit={async (code) => {
