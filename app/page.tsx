@@ -47,7 +47,10 @@ interface State {
 type Tab = "chat" | "adjuntos" | "descargables";
 
 const EMPTY: State = { chat: [], api: [], attachments: [], removed: [], downloads: [] };
-const STORAGE_KEY = "plcdoctor-consulta-v1";
+// La consulta vive solo en la pestaña abierta (sessionStorage): sobrevive a recargar
+// la página, pero cada vez que se abre la app empieza una consulta limpia.
+const STORAGE_KEY = "plcdoctor-consulta";
+const OLD_STORAGE_KEY = "plcdoctor-consulta-v1";
 const CODE_KEY = "plcdoctor-codigo";
 const TEXT_EXT = ["scl", "xml", "st", "awl", "csv", "txt", "md", "log", "json", "udt", "db"];
 const MAX_UPLOAD = 4 * 1024 * 1024;
@@ -174,10 +177,12 @@ export default function Home() {
   /* Carga inicial: conversación guardada y control de acceso */
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
+      localStorage.removeItem(OLD_STORAGE_KEY);
+      const saved = sessionStorage.getItem(STORAGE_KEY);
       if (saved) {
         const s = JSON.parse(saved) as State;
         s.attachments = s.attachments.filter((a) => a.status === "ready");
+        s.chat = s.chat.filter((m) => !m.error);
         setState(s);
       }
     } catch {}
@@ -203,7 +208,7 @@ export default function Home() {
   useEffect(() => {
     if (!loaded) return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch {}
   }, [state, loaded]);
 
@@ -391,6 +396,7 @@ export default function Home() {
   function newConsultation() {
     if (state.chat.length && !confirm("¿Empezar una consulta nueva? Se borrarán el chat, los adjuntos y los descargables.")) return;
     setState(EMPTY);
+    setInput("");
     setTab("chat");
     setNewDownloads(0);
   }
