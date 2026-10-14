@@ -5,6 +5,7 @@ import { marked } from "marked";
 import { extractInstructions, type Instruction } from "@/lib/instructions";
 import { candidatesFor, fileHash, findExact, saveToHistory, type HistoryEntry } from "@/lib/history";
 import PdfPreview from "./PdfPreview";
+import { LOGO_SVG, LOGO_VIEWBOX } from "@/lib/logo";
 
 /* ---------- Tipos ---------- */
 
@@ -193,44 +194,34 @@ function attachmentBlocks(a: Attachment): ApiBlock[] {
 
 /* ---------- Iconos ---------- */
 
+// Iconos duotono: línea más un relleno suave del mismo color (.s forma, .d detalle, .l solo línea).
+const svgIcon = (body: React.ReactNode) => (
+  <svg viewBox="0 0 24 24" className="ic" aria-hidden="true">{body}</svg>
+);
+
 const Icon = {
-  chat: (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4V5z" /></svg>
-  ),
-  clip: (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 12.5l6.5-6.5a3 3 0 014.2 4.2l-8.1 8.1a5 5 0 01-7-7L11 4" /></svg>
-  ),
-  download: (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19h14" /></svg>
-  ),
-  send: (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-8-6 16-2.5-6.5L4 12z" /></svg>
-  ),
-  camera: (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-2.5h6L17 8h3v11H4V8z" /><circle cx="12" cy="13" r="3.5" /></svg>
-  ),
-  trash: (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12" /></svg>
-  ),
-  doc: (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6V3z" /><path d="M14 3v4h4" /></svg>
-  ),
-  code: (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6V3z" /><path d="M10 12l-2 2 2 2M14 12l2 2-2 2" /></svg>
-  ),
-  plus: (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-  ),
-  image: (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2" /><circle cx="9.5" cy="10" r="1.5" /><path d="M20 16l-4.5-4.5L8 19" /></svg>
-  ),
-  mic: (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3.5" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0012 0M12 17v3.5" /></svg>
-  ),
-  history: (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 102.3-5.6M4 4v4h4" /><path d="M12 8v4.5l3 2" /></svg>
-  ),
+  chat: svgIcon(<><path className="s" d="M4 5.5A1.5 1.5 0 015.5 4h13A1.5 1.5 0 0120 5.5v9a1.5 1.5 0 01-1.5 1.5H9l-5 4V5.5z" /><path className="d" d="M8 9h8M8 12h5" /></>),
+  clip: svgIcon(<path className="l" d="M20.5 11.5l-8.4 8.4a5 5 0 01-7.1-7.1l8.4-8.4a3.4 3.4 0 014.8 4.8l-8.4 8.4a1.7 1.7 0 01-2.4-2.4l7.7-7.7" />),
+  download: svgIcon(<path className="l" d="M12 3.5v11M7.5 10l4.5 4.5 4.5-4.5M4 15.5v3a2 2 0 002 2h12a2 2 0 002-2v-3" />),
+  send: svgIcon(<><path className="s" d="M21.5 2.5L2.5 9.8l7.8 3.9 3.9 7.8Z" /><path className="d" d="M21.5 2.5l-11.2 11.2" /></>),
+  camera: svgIcon(<><path className="s" d="M3 8.5a2 2 0 012-2h2.2l1.5-2h6.6l1.5 2H19a2 2 0 012 2V18a2 2 0 01-2 2H5a2 2 0 01-2-2Z" /><circle className="d" cx="12" cy="13" r="3.4" /></>),
+  trash: svgIcon(<><path className="s" d="M6.5 7.5h11l-1 12a1.5 1.5 0 01-1.5 1.4H9a1.5 1.5 0 01-1.5-1.4l-1-12z" /><path className="l" d="M4.5 7.5h15M9.5 7.5V5a1 1 0 011-1h3a1 1 0 011 1v2.5" /><path className="d" d="M10.5 11v6M13.5 11v6" /></>),
+  doc: svgIcon(<><path className="s" d="M6 2.5h8.5l5 5V20a1.5 1.5 0 01-1.5 1.5H6A1.5 1.5 0 014.5 20V4A1.5 1.5 0 016 2.5Z" /><path className="d" d="M14.5 2.5V7.5h5M8.5 12.5h7M8.5 16h5" /></>),
+  code: svgIcon(<><path className="s" d="M6 2.5h8.5l5 5V20a1.5 1.5 0 01-1.5 1.5H6A1.5 1.5 0 014.5 20V4A1.5 1.5 0 016 2.5Z" /><path className="d" d="M14.5 2.5V7.5h5M10 12l-2 2 2 2M14 12l2 2-2 2" /></>),
+  plus: svgIcon(<path className="l" d="M12 5v14M5 12h14" />),
+  image: svgIcon(<><rect className="s" x="3" y="4" width="18" height="16" rx="2.2" /><circle className="d" cx="8.5" cy="9.5" r="1.6" /><path className="d" d="M20.5 15.5l-4.5-4.5L5.5 19.5" /></>),
+  mic: svgIcon(<><rect className="s" x="9" y="3" width="6" height="11" rx="3" /><path className="l" d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21M8.5 21h7" /></>),
+  history: svgIcon(<><circle className="f" cx="12" cy="12" r="8.5" /><path className="l" d="M3.5 12a8.5 8.5 0 102.5-6L3.5 8.5M3.5 4v4.5H8" /><path className="d" d="M12 7.5V12l3 2" /></>),
 };
+
+// Robot doctor en busto, siempre sobre su ficha blanca.
+function Logo({ size = "" }: { size?: string }) {
+  return (
+    <span className={`logo ${size}`}>
+      <svg viewBox={LOGO_VIEWBOX} role="img" aria-label="PLCDoctor" dangerouslySetInnerHTML={{ __html: LOGO_SVG }} />
+    </span>
+  );
+}
 
 /* ---------- Página ---------- */
 
@@ -746,7 +737,7 @@ export default function Home() {
       <div className="messages" ref={scrollRef}>
         {state.chat.length === 0 && !busy && (
           <div className="welcome">
-            <div className="welcome-badge">PLC</div>
+            <Logo size="huge" />
             <h1>¿Qué le pasa a la máquina?</h1>
             <p>Cuéntame el síntoma y sube a Adjuntos los esquemas, el programa del PLC o fotos. Te ayudo a ordenar el diagnóstico.</p>
           </div>
@@ -981,10 +972,10 @@ export default function Home() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <div className="logo">PLC</div>
+          <Logo />
           <div>
-            <div className="brand-name">PLCDoctor</div>
-            <div className="brand-sub">Asistente de diagnóstico de averías</div>
+            <div className="brand-name">PLC<span>Doctor</span></div>
+            <div className="brand-sub"><i className="led" /> Asistente de diagnóstico de averías</div>
           </div>
         </div>
         <button className="ghost-btn" onClick={newConsultation} disabled={busy}>
@@ -1065,7 +1056,7 @@ function LoginScreen({ onSubmit }: { onSubmit: (code: string) => Promise<boolean
           setError(!(await onSubmit(code.trim())));
         }}
       >
-        <div className="logo big">PLC</div>
+        <Logo size="big" />
         <h1>PLCDoctor</h1>
         <p>Introduce el código de acceso</p>
         <input type="password" value={code} onChange={(e) => setCode(e.target.value)} autoFocus placeholder="Código" />
