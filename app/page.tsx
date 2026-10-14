@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { marked } from "marked";
 import { extractInstructions, type Instruction } from "@/lib/instructions";
+import { candidatesFor, fileHash, findExact, saveToHistory, type HistoryEntry } from "@/lib/history";
+import PdfPreview from "./PdfPreview";
 
 /* ---------- Tipos ---------- */
 
@@ -12,12 +14,25 @@ interface ApiMessage {
   content: ApiBlock[];
 }
 
+type StepState = "ok" | "no";
+interface Check {
+  s: StepState;
+  t: string;
+}
+
 interface ChatItem {
   id: string;
   role: "user" | "assistant";
   text: string;
   note?: string;
   error?: boolean;
+  // Fecha de la respuesta original cuando se ha reutilizado del histórico.
+  fromHistory?: number;
+  // Instrucciones creadas en esta respuesta, para la vista previa en el chat.
+  downloadIds?: string[];
+  // Pasos marcados por el técnico y lo que ya se le ha contado al agente.
+  checks?: Record<string, Check>;
+  reported?: Record<string, Check>;
 }
 
 type Kind = "pdf" | "image" | "text";
@@ -33,6 +48,7 @@ interface Attachment {
   mediaType?: string;
   text?: string;
   thumb?: string;
+  hash?: string;
   sent: boolean;
 }
 
@@ -57,6 +73,30 @@ const MAX_UPLOAD = 4 * 1024 * 1024;
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
+// Reconocimiento de voz del navegador (Web Speech API), con los tipos mínimos que se usan.
+interface SpeechResultEvent {
+  resultIndex: number;
+  results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
+}
+interface SpeechRec {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((e: SpeechResultEvent) => void) | null;
+  onerror: ((e: { error: string }) => void) | null;
+  onend: (() => void) | null;
+  start(): void;
+  stop(): void;
+  abort(): void;
+}
+type SpeechRecCtor = new () => SpeechRec;
+
+function speechCtor(): SpeechRecCtor | null {
+  if (typeof window === "undefined") return null;
+  const w = window as unknown as { SpeechRecognition?: SpeechRecCtor; webkitSpeechRecognition?: SpeechRecCtor };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
+
 /* ---------- Utilidades ---------- */
 
 marked.use({
@@ -71,6 +111,36 @@ marked.use({
 
 function renderMarkdown(md: string): string {
   return marked.parse(md, { async: false }) as string;
+}
+
+// Convierte cada elemento de las listas del agente en un paso que se puede marcar.
+function withSteps(html: string, checks?: Record<string, Check>): string {
+  let i = 0;
+  return html.replace(/<li>/g, () => {
+    const n = i++;
+    const state = checks?.[n]?.s;
+    return `<li data-step="${n}" class="step${state ? " " + state : ""}">`;
+  });
+}
+
+// Lo que el técnico ha marcado o desmarcado desde su último mensaje, para que el agente lo tenga en cuenta.
+function checkNotes(chat: ChatItem[]): string | null {
+  const ok: string[] = [];
+  const no: string[] = [];
+  const undone: string[] = [];
+  for (const m of chat) {
+    for (const [n, c] of Object.entries(m.checks ?? {})) {
+      if (m.reported?.[n]?.s !== c.s) (c.s === "ok" ? ok : no).push(c.t);
+    }
+    for (const [n, c] of Object.entries(m.reported ?? {})) {
+      if (!m.checks?.[n]) undone.push(c.t);
+    }
+  }
+  const parts: string[] = [];
+  if (ok.length) parts.push(`revisado: ${ok.join(" | ")}`);
+  if (no.length) parts.push(`descartado: ${no.join(" | ")}`);
+  if (undone.length) parts.push(`desmarcado: ${undone.join(" | ")}`);
+  return parts.length ? `[El técnico ha marcado en tus listas de pasos. ${parts.join(". ")}]` : null;
 }
 
 function kindOf(file: File): Kind | null {
@@ -151,6 +221,15 @@ const Icon = {
   plus: (
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
   ),
+  image: (
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2" /><circle cx="9.5" cy="10" r="1.5" /><path d="M20 16l-4.5-4.5L8 19" /></svg>
+  ),
+  mic: (
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3.5" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0012 0M12 17v3.5" /></svg>
+  ),
+  history: (
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 102.3-5.6M4 4v4h4" /><path d="M12 8v4.5l3 2" /></svg>
+  ),
 };
 
 /* ---------- Página ---------- */
@@ -166,12 +245,19 @@ export default function Home() {
   const [newDownloads, setNewDownloads] = useState(0);
   const [openInstruction, setOpenInstruction] = useState<string | null>(null);
   const [auth, setAuth] = useState<{ required: boolean; code: string; ok: boolean } | null>(null);
+  const [attachMenu, setAttachMenu] = useState(false);
+  const [speechOk, setSpeechOk] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [interim, setInterim] = useState("");
+  const [micError, setMicError] = useState("");
 
   const stateRef = useRef(state);
   stateRef.current = state;
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
+  const recRef = useRef<SpeechRec | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   /* Carga inicial: conversación guardada y control de acceso */
@@ -220,6 +306,19 @@ export default function Home() {
     if (tab === "descargables") setNewDownloads(0);
   }, [tab]);
 
+  useEffect(() => {
+    setSpeechOk(!!speechCtor());
+    return () => recRef.current?.abort();
+  }, []);
+
+  // El cuadro de texto crece con lo que se escribe o se dicta.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 160) + "px";
+  }, [input]);
+
   const headers = useCallback((): Record<string, string> => (auth?.code ? { "x-access-code": auth.code } : {}), [auth]);
 
   const patchAttachment = (id: string, patch: Partial<Attachment>) =>
@@ -227,8 +326,9 @@ export default function Home() {
 
   /* ---------- Adjuntos ---------- */
 
-  async function addFiles(files: FileList | null) {
+  async function addFiles(files: FileList | File[] | null) {
     if (!files) return;
+    setAttachMenu(false);
     for (const file of Array.from(files)) {
       const kind = kindOf(file);
       const id = uid();
@@ -242,6 +342,7 @@ export default function Home() {
       }
       setState((s) => ({ ...s, attachments: [...s.attachments, base] }));
       try {
+        patchAttachment(id, { hash: await fileHash(file) });
         if (kind === "text") {
           if (file.size > 1024 * 1024) throw new Error("El archivo de texto supera 1 MB");
           patchAttachment(id, { text: await file.text(), status: "ready" });
@@ -284,7 +385,202 @@ export default function Home() {
     }));
   }
 
+  // Pegar una captura o una foto (Ctrl+V) en el cuadro de texto la añade a Adjuntos.
+  function pasteFiles(e: React.ClipboardEvent) {
+    const files = Array.from(e.clipboardData.files);
+    if (!files.length) return;
+    e.preventDefault();
+    const stamp = new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).replace(/:/g, "");
+    addFiles(
+      files.map((f, i) =>
+        f.type.startsWith("image/") && /^image\.\w+$/i.test(f.name)
+          ? new File([f], `captura-${stamp}${i ? "-" + i : ""}.${f.name.split(".").pop()}`, { type: f.type })
+          : f,
+      ),
+    );
+  }
+
+  /* ---------- Dictado ---------- */
+
+  // El dictado se añade al cuadro de texto, donde se puede corregir antes de enviar.
+  // Se puede escribir y dictar a la vez: cada frase reconocida se añade al final.
+  function appendDictation(segment: string) {
+    const t = segment.trim();
+    if (!t) return;
+    setInput((prev) => {
+      const sep = prev && !/\s$/.test(prev) ? " " : "";
+      const capital = !prev.trim() || /[.!?]\s*$/.test(prev);
+      return prev + sep + (capital ? t[0].toUpperCase() + t.slice(1) : t);
+    });
+  }
+
+  function toggleDictation() {
+    if (recRef.current) {
+      recRef.current.stop();
+      return;
+    }
+    const Rec = speechCtor();
+    if (!Rec) return;
+    const rec = new Rec();
+    rec.lang = "es-ES";
+    rec.continuous = true;
+    rec.interimResults = true;
+    const done = new Set<number>();
+    rec.onresult = (e) => {
+      let pending = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) {
+          if (!done.has(i)) {
+            done.add(i);
+            appendDictation(r[0].transcript);
+          }
+        } else {
+          pending += r[0].transcript;
+        }
+      }
+      setInterim(pending);
+    };
+    rec.onerror = (e) => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") setMicError("Permite el uso del micrófono en el navegador para dictar.");
+      else if (e.error !== "no-speech" && e.error !== "aborted") setMicError(`No se ha podido dictar (${e.error}).`);
+    };
+    rec.onend = () => {
+      recRef.current = null;
+      setListening(false);
+      setInterim("");
+    };
+    setMicError("");
+    try {
+      rec.start();
+      recRef.current = rec;
+      setListening(true);
+    } catch {
+      setMicError("No se ha podido activar el micrófono.");
+    }
+  }
+
+  function stopDictation() {
+    recRef.current?.abort();
+    recRef.current = null;
+    setListening(false);
+    setInterim("");
+  }
+
+  /* ---------- Pasos marcables ---------- */
+
+  // Un toque: revisado. Otro: descartado. Otro: sin marcar. El texto se tacha pero sigue legible.
+  function toggleStep(itemId: string, e: React.MouseEvent<HTMLDivElement>) {
+    const target = e.target as HTMLElement;
+    if (target.closest("a")) return;
+    const li = target.closest<HTMLLIElement>("li[data-step]");
+    if (!li?.dataset.step) return;
+    const n = li.dataset.step;
+    const clone = li.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll("ul, ol").forEach((x) => x.remove());
+    const t = (clone.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
+    setState((s) => ({
+      ...s,
+      chat: s.chat.map((m) => {
+        if (m.id !== itemId) return m;
+        const checks = { ...(m.checks ?? {}) };
+        const cur = checks[n]?.s;
+        const next: StepState | undefined = cur === undefined ? "ok" : cur === "ok" ? "no" : undefined;
+        if (next) checks[n] = { s: next, t };
+        else delete checks[n];
+        return { ...m, checks };
+      }),
+    }));
+  }
+
   /* ---------- Chat ---------- */
+
+  // Llama al agente con la conversación y va mostrando la respuesta según llega.
+  async function callAgent(api: ApiMessage[]): Promise<{ full: string; turns: ApiBlock[][] }> {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers() },
+      body: JSON.stringify({ messages: api }),
+    });
+    if (!res.ok || !res.body) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error ?? `Error ${res.status}`);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let full = "";
+    let turns: ApiBlock[][] | null = null;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const ev = JSON.parse(line);
+        if (ev.t === "text") {
+          full += ev.d;
+          setStreamText(full);
+          setStreamStatus("");
+        } else if (ev.t === "status") {
+          setStreamStatus(ev.d);
+        } else if (ev.t === "done") {
+          turns = ev.turns;
+        } else if (ev.t === "error") {
+          throw new Error(ev.d);
+        }
+      }
+    }
+    if (!turns) throw new Error("La respuesta se cortó antes de terminar");
+    return { full, turns };
+  }
+
+  // Añade la respuesta al chat y saca sus instrucciones a Descargables.
+  function applyAnswer(full: string, turns: ApiBlock[][], fromHistory?: number) {
+    const { visible, found } = extractInstructions(full);
+    const now = Date.now();
+    const newIns: Instruction[] = found.map((f, i) => ({ id: uid(), title: f.title, markdown: f.markdown, createdAt: now + i }));
+    setState((cur) => ({
+      ...cur,
+      api: [...cur.api, ...turns.map((content) => ({ role: "assistant" as const, content }))],
+      chat: [
+        ...cur.chat,
+        {
+          id: uid(),
+          role: "assistant",
+          text: visible || (newIns.length ? "Instrucción creada." : "(sin respuesta)"),
+          fromHistory,
+          downloadIds: newIns.length ? newIns.map((d) => d.id) : undefined,
+        },
+      ],
+      downloads: [...newIns, ...cur.downloads],
+    }));
+    if (newIns.length) setNewDownloads((n) => n + newIns.length);
+  }
+
+  // Busca la misma consulta en el histórico: primero idéntica y, si no, equivalente según el modelo.
+  async function lookupHistory(question: string, files: string[]): Promise<HistoryEntry | null> {
+    const exact = findExact(question, files);
+    if (exact) return exact;
+    const candidates = candidatesFor(files);
+    if (!candidates.length) return null;
+    setStreamStatus("Buscando en el histórico…");
+    try {
+      const res = await fetch("/api/similar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers() },
+        body: JSON.stringify({ question, candidates: candidates.map((c) => c.question) }),
+      });
+      const { match } = (await res.json()) as { match: number | null };
+      return match === null ? null : (candidates[match] ?? null);
+    } catch {
+      return null;
+    } finally {
+      setStreamStatus("");
+    }
+  }
 
   async function send() {
     const s = stateRef.current;
@@ -292,10 +588,13 @@ export default function Home() {
     const pending = s.attachments.filter((a) => a.status === "ready" && !a.sent);
     if (busy || (!text && pending.length === 0)) return;
     if (s.attachments.some((a) => a.status === "uploading")) return;
+    stopDictation();
 
     const notes: string[] = [];
     if (pending.length) notes.push(`[El técnico ha subido a Adjuntos: ${pending.map((a) => a.name).join(", ")}]`);
     if (s.removed.length) notes.push(`[El técnico ha quitado de Adjuntos: ${s.removed.join(", ")}]`);
+    const checks = checkNotes(s.chat);
+    if (checks) notes.push(checks);
     const onlyPhotos = pending.length > 0 && pending.every((a) => a.kind === "image");
     const userText =
       text || (onlyPhotos ? "Te paso una foto. Dime qué componente es y lo que veas relevante." : "He subido documentación nueva a Adjuntos.");
@@ -314,10 +613,14 @@ export default function Home() {
     const api = [...s.api, userMsg];
     const pendingIds = new Set(pending.map((a) => a.id));
 
+    // El histórico solo se usa en la primera pregunta de la consulta, con los mismos adjuntos.
+    const hashes = pending.map((a) => a.hash);
+    const cacheable = s.chat.length === 0 && !!text && hashes.every(Boolean);
+
     setState({
       ...s,
       api,
-      chat: [...s.chat, chatUser],
+      chat: [...s.chat.map((m) => (m.checks || m.reported ? { ...m, reported: m.checks } : m)), chatUser],
       removed: [],
       attachments: s.attachments.map((a) => (pendingIds.has(a.id) ? { ...a, sent: true } : a)),
     });
@@ -327,54 +630,14 @@ export default function Home() {
     setStreamStatus("");
 
     try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...headers() },
-        body: JSON.stringify({ messages: api }),
-      });
-      if (!res.ok || !res.body) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? `Error ${res.status}`);
+      const hit = cacheable ? await lookupHistory(text, hashes as string[]) : null;
+      if (hit) {
+        applyAnswer(hit.answer, [[{ type: "text", text: hit.answer }]], hit.createdAt);
+      } else {
+        const { full, turns } = await callAgent(api);
+        applyAnswer(full, turns);
+        if (cacheable) saveToHistory({ question: text, files: hashes as string[], fileNames: pending.map((a) => a.name), answer: full });
       }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let full = "";
-      let turns: ApiBlock[][] | null = null;
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const ev = JSON.parse(line);
-          if (ev.t === "text") {
-            full += ev.d;
-            setStreamText(full);
-            setStreamStatus("");
-          } else if (ev.t === "status") {
-            setStreamStatus(ev.d);
-          } else if (ev.t === "done") {
-            turns = ev.turns;
-          } else if (ev.t === "error") {
-            throw new Error(ev.d);
-          }
-        }
-      }
-      if (!turns) throw new Error("La respuesta se cortó antes de terminar");
-
-      const { visible, found } = extractInstructions(full);
-      const now = Date.now();
-      const newIns: Instruction[] = found.map((f, i) => ({ id: uid(), title: f.title, markdown: f.markdown, createdAt: now + i }));
-      setState((cur) => ({
-        ...cur,
-        api: [...cur.api, ...turns!.map((content) => ({ role: "assistant" as const, content }))],
-        chat: [...cur.chat, { id: uid(), role: "assistant", text: visible || (newIns.length ? "Instrucción creada." : "(sin respuesta)") }],
-        downloads: [...newIns, ...cur.downloads],
-      }));
-      if (newIns.length) setNewDownloads((n) => n + newIns.length);
     } catch (err) {
       // Deshace el turno para que el técnico pueda reintentar sin romper el historial.
       setState({
@@ -393,10 +656,44 @@ export default function Home() {
     }
   }
 
+  // Descarta la respuesta sacada del histórico y pregunta al agente de nuevo.
+  async function askAgentAgain(item: ChatItem) {
+    const s = stateRef.current;
+    if (busy || s.chat[s.chat.length - 1]?.id !== item.id) return;
+    const ids = new Set(item.downloadIds ?? []);
+    const api = s.api.slice(0, -1);
+    setState({ ...s, api, chat: s.chat.slice(0, -1), downloads: s.downloads.filter((d) => !ids.has(d.id)) });
+    setBusy(true);
+    setStreamText("");
+    setStreamStatus("");
+    try {
+      const { full, turns } = await callAgent(api);
+      applyAnswer(full, turns);
+      const question = s.chat.find((m) => m.role === "user")?.text ?? "";
+      const sent = s.attachments.filter((a) => a.sent);
+      if (question && sent.every((a) => a.hash)) {
+        saveToHistory({ question, files: sent.map((a) => a.hash!), fileNames: sent.map((a) => a.name), answer: full });
+      }
+    } catch (err) {
+      setState({
+        ...s,
+        chat: [
+          ...s.chat,
+          { id: uid(), role: "assistant", error: true, text: `No he podido consultar al agente: ${err instanceof Error ? err.message : "error desconocido"}` },
+        ],
+      });
+    } finally {
+      setBusy(false);
+      setStreamText("");
+      setStreamStatus("");
+    }
+  }
+
   function newConsultation() {
     if (state.chat.length && !confirm("¿Empezar una consulta nueva? Se borrarán el chat, los adjuntos y los descargables.")) return;
     setState(EMPTY);
     setInput("");
+    stopDictation();
     setTab("chat");
     setNewDownloads(0);
   }
@@ -434,8 +731,18 @@ export default function Home() {
 
   /* ---------- Vistas ---------- */
 
+  const lastId = state.chat[state.chat.length - 1]?.id;
+
   const chatView = (
-    <section className="panel chat" aria-label="Chat">
+    <section
+      className="panel chat"
+      aria-label="Chat"
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        e.preventDefault();
+        addFiles(e.dataTransfer.files);
+      }}
+    >
       <div className="messages" ref={scrollRef}>
         {state.chat.length === 0 && !busy && (
           <div className="welcome">
@@ -444,7 +751,43 @@ export default function Home() {
             <p>Cuéntame el síntoma y sube a Adjuntos los esquemas, el programa del PLC o fotos. Te ayudo a ordenar el diagnóstico.</p>
           </div>
         )}
-        {state.chat.map((m) => (
+        {state.chat.map((m) => {
+          if (m.role === "assistant" && !m.error) {
+            const html = renderMarkdown(m.text);
+            const steps = html.includes("<li>");
+            const previews = (m.downloadIds ?? [])
+              .map((id) => state.downloads.find((d) => d.id === id))
+              .filter((d): d is Instruction => !!d);
+            return (
+              <div key={m.id} className="msg assistant">
+                <div className="answer">
+                  {m.fromHistory && (
+                    <div className="from-history">
+                      {Icon.history}
+                      <span>
+                        Respuesta del histórico ({new Date(m.fromHistory).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" })}), misma consulta con los mismos adjuntos.
+                      </span>
+                      {m.id === lastId && (
+                        <button onClick={() => askAgentAgain(m)} disabled={busy}>
+                          Consultar al agente igualmente
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  <div
+                    className="bubble md"
+                    onClick={steps ? (e) => toggleStep(m.id, e) : undefined}
+                    dangerouslySetInnerHTML={{ __html: steps ? withSteps(html, m.checks) : html }}
+                  />
+                  {steps && <div className="steps-hint">Toca un paso: una vez revisado, dos descartado, tres lo desmarca.</div>}
+                  {previews.map((d) => (
+                    <PdfPreview key={d.id} ins={d} />
+                  ))}
+                </div>
+              </div>
+            );
+          }
+          return (
           <div key={m.id} className={`msg ${m.role}${m.error ? " error" : ""}`}>
             {m.role === "assistant" ? (
               <div className="bubble md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text) }} />
@@ -455,7 +798,8 @@ export default function Home() {
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
         {busy && (
           <div className="msg assistant">
             <div className="bubble md">
@@ -476,23 +820,41 @@ export default function Home() {
             {Icon.clip} {pendingCount} adjunto{pendingCount > 1 ? "s" : ""} nuevo{pendingCount > 1 ? "s" : ""} se enviará{pendingCount > 1 ? "n" : ""} con tu mensaje
           </div>
         )}
+        {listening && (
+          <div className="dictation">
+            <span className="rec-dot" /> Escuchando… {interim && <em>{interim}</em>}
+          </div>
+        )}
+        {micError && <div className="hint err">{micError}</div>}
         <div className="composer-row">
-          <button className="icon-btn" title="Adjuntar archivo" onClick={() => fileRef.current?.click()}>
-            {Icon.clip}
-          </button>
-          <button className="icon-btn only-mobile" title="Hacer foto" onClick={() => cameraRef.current?.click()}>
-            {Icon.camera}
-          </button>
+          <div className="attach">
+            <button className={`icon-btn${attachMenu ? " on" : ""}`} title="Adjuntar" onClick={() => setAttachMenu((v) => !v)}>
+              {Icon.clip}
+            </button>
+            {attachMenu && (
+              <>
+                <div className="menu-backdrop" onClick={() => setAttachMenu(false)} />
+                <div className="attach-menu" role="menu">
+                  <button className="only-mobile-flex" onClick={() => cameraRef.current?.click()}>
+                    {Icon.camera} Hacer una foto
+                  </button>
+                  <button onClick={() => galleryRef.current?.click()}>
+                    {Icon.image} Fotos de la galería o del equipo
+                  </button>
+                  <button onClick={() => fileRef.current?.click()}>
+                    {Icon.doc} Documentos (PDF, programa, texto)
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
           <textarea
             ref={inputRef}
             value={input}
             rows={1}
-            placeholder="Describe la avería o lo que has comprobado…"
-            onChange={(e) => {
-              setInput(e.target.value);
-              e.target.style.height = "auto";
-              e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
-            }}
+            placeholder={listening ? "Habla, o escribe a la vez…" : "Describe la avería o lo que has comprobado…"}
+            onChange={(e) => setInput(e.target.value)}
+            onPaste={pasteFiles}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && window.matchMedia("(min-width: 900px)").matches) {
                 e.preventDefault();
@@ -500,6 +862,16 @@ export default function Home() {
               }
             }}
           />
+          {speechOk && (
+            <button
+              className={`icon-btn mic${listening ? " recording" : ""}`}
+              title={listening ? "Parar el dictado" : "Dictar por voz"}
+              aria-pressed={listening}
+              onClick={toggleDictation}
+            >
+              {Icon.mic}
+            </button>
+          )}
           <button
             className="send-btn"
             title="Enviar"
@@ -533,9 +905,14 @@ export default function Home() {
           <span>Esquemas, planos, programa del PLC, manuales o fotos</span>
         </div>
       </div>
-      <button className="secondary-btn only-mobile" onClick={() => cameraRef.current?.click()}>
-        {Icon.camera} Hacer una foto
-      </button>
+      <div className="photo-btns">
+        <button className="secondary-btn only-mobile" onClick={() => cameraRef.current?.click()}>
+          {Icon.camera} Hacer una foto
+        </button>
+        <button className="secondary-btn" onClick={() => galleryRef.current?.click()}>
+          {Icon.image} Fotos de la galería
+        </button>
+      </div>
       <ul className="list">
         {state.attachments.length === 0 && <li className="empty">Aún no hay documentación.</li>}
         {state.attachments.map((a) => (
@@ -646,6 +1023,17 @@ export default function Home() {
         multiple
         hidden
         accept=".pdf,image/*,.scl,.xml,.st,.awl,.csv,.txt,.md,.log,.json,.udt,.db"
+        onChange={(e) => {
+          addFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
+      <input
+        ref={galleryRef}
+        type="file"
+        multiple
+        hidden
+        accept="image/*"
         onChange={(e) => {
           addFiles(e.target.files);
           e.target.value = "";
