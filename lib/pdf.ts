@@ -1,6 +1,7 @@
 import { jsPDF } from "jspdf";
 import { marked, type Token, type Tokens } from "marked";
 import type { Instruction } from "./instructions";
+import { LOGO_PNG } from "./logoPdf";
 
 // Helvetica de jsPDF solo cubre Latin-1: sustituye los símbolos habituales que no entran.
 function clean(s: string): string {
@@ -49,16 +50,20 @@ export function instructionPdf(ins: Instruction): jsPDF {
 
   const header = () => {
     doc.setFillColor(...BLUE);
-    doc.rect(0, 0, W, 16, "F");
+    doc.rect(0, 0, W, 18, "F");
+    // Logo arriba a la izquierda: robot azul sobre un recuadro blanco.
+    doc.setFillColor(255, 255, 255);
+    doc.roundedRect(M, 2.5, 13, 13, 1.5, 1.5, "F");
+    doc.addImage(LOGO_PNG, "PNG", M + 0.75, 3.25, 11.5, 11.5, "logo", "FAST");
     doc.setTextColor(255, 255, 255);
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(11);
-    doc.text("PLCDoctor", M, 10.5);
+    doc.setFontSize(12);
+    doc.text("PLCDoctor", M + 17, 11.5);
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
-    doc.text("Instrucción de trabajo", W - M, 10.5, { align: "right" });
+    doc.text("Instrucción de trabajo", W - M, 11.5, { align: "right" });
     doc.setTextColor(30, 30, 30);
-    y = 26;
+    y = 28;
   };
 
   const ensure = (h: number) => {
