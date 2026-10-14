@@ -209,6 +209,7 @@ const Icon = {
   code: svgIcon(<><path className="s" d="M6 2.5h8.5l5 5V20a1.5 1.5 0 01-1.5 1.5H6A1.5 1.5 0 014.5 20V4A1.5 1.5 0 016 2.5Z" /><path className="d" d="M14.5 2.5V7.5h5M10 12l-2 2 2 2M14 12l2 2-2 2" /></>),
   plus: svgIcon(<path className="l" d="M12 5v14M5 12h14" />),
   image: svgIcon(<><rect className="s" x="3" y="4" width="18" height="16" rx="2.2" /><circle className="d" cx="8.5" cy="9.5" r="1.6" /><path className="d" d="M20.5 15.5l-4.5-4.5L5.5 19.5" /></>),
+  stop: svgIcon(<rect className="s" x="6.5" y="6.5" width="11" height="11" rx="2" />),
   mic: svgIcon(<><rect className="s" x="9" y="3" width="6" height="11" rx="3" /><path className="l" d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21M8.5 21h7" /></>),
   history: svgIcon(<><circle className="f" cx="12" cy="12" r="8.5" /><path className="l" d="M3.5 12a8.5 8.5 0 102.5-6L3.5 8.5M3.5 4v4.5H8" /><path className="d" d="M12 7.5V12l3 2" /></>),
 };
@@ -249,6 +250,8 @@ export default function Home() {
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
   const recRef = useRef<SpeechRec | null>(null);
+  const wantRef = useRef(false);
+  const restartRef = useRef<number | undefined>(undefined);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   /* Carga inicial: conversación guardada y control de acceso */
@@ -299,7 +302,10 @@ export default function Home() {
 
   useEffect(() => {
     setSpeechOk(!!speechCtor());
-    return () => recRef.current?.abort();
+    return () => {
+      wantRef.current = false;
+      recRef.current?.abort();
+    };
   }, []);
 
   // El cuadro de texto crece con lo que se escribe o se dicta.
@@ -405,55 +411,98 @@ export default function Home() {
     });
   }
 
-  function toggleDictation() {
-    if (recRef.current) {
-      recRef.current.stop();
-      return;
+  // Une los resultados de una escucha. Chrome en Android a veces repite en cada resultado
+  // todo lo dicho antes ("abre", "abre la", "abre la válvula"): si uno contiene al anterior,
+  // se queda solo con el más largo en lugar de sumarlos.
+  function joinResults(e: SpeechResultEvent): { final: string; pending: string } {
+    let final = "";
+    let pending = "";
+    for (let i = 0; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript.trim();
+      if (!t) continue;
+      if (e.results[i].isFinal) {
+        const a = final.toLowerCase();
+        const b = t.toLowerCase();
+        if (b.startsWith(a)) final = t;
+        else if (!a.endsWith(b)) final = final ? `${final} ${t}` : t;
+      } else {
+        pending = pending ? `${pending} ${t}` : t;
+      }
     }
+    return { final, pending };
+  }
+
+  // Funciona como interruptor: un toque empieza a escuchar y sigue escuchando entre frases
+  // hasta que se vuelve a tocar. Cada frase se escucha por separado (sin modo continuo, que en
+  // Android duplica texto) y al terminar se vuelca una sola vez al cuadro de texto.
+  function listenOnce() {
     const Rec = speechCtor();
-    if (!Rec) return;
+    if (!Rec || !wantRef.current) return;
     const rec = new Rec();
     rec.lang = "es-ES";
-    rec.continuous = true;
+    rec.continuous = false;
     rec.interimResults = true;
-    const done = new Set<number>();
+    let heard = "";
     rec.onresult = (e) => {
-      let pending = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        if (r.isFinal) {
-          if (!done.has(i)) {
-            done.add(i);
-            appendDictation(r[0].transcript);
-          }
-        } else {
-          pending += r[0].transcript;
-        }
-      }
-      setInterim(pending);
+      const { final, pending } = joinResults(e);
+      if (final) heard = final;
+      setInterim([final, pending].filter(Boolean).join(" "));
     };
     rec.onerror = (e) => {
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") setMicError("Permite el uso del micrófono en el navegador para dictar.");
-      else if (e.error !== "no-speech" && e.error !== "aborted") setMicError(`No se ha podido dictar (${e.error}).`);
+      if (e.error === "no-speech" || e.error === "aborted") return;
+      wantRef.current = false;
+      setMicError(
+        e.error === "not-allowed" || e.error === "service-not-allowed"
+          ? "Permite el uso del micrófono en el navegador para dictar."
+          : `No se ha podido dictar (${e.error}).`,
+      );
     };
     rec.onend = () => {
-      recRef.current = null;
-      setListening(false);
+      if (recRef.current === rec) recRef.current = null;
+      if (heard) appendDictation(heard);
+      heard = "";
       setInterim("");
+      if (wantRef.current) {
+        restartRef.current = window.setTimeout(listenOnce, 120);
+      } else {
+        setListening(false);
+      }
     };
-    setMicError("");
     try {
       rec.start();
       recRef.current = rec;
-      setListening(true);
     } catch {
+      wantRef.current = false;
+      setListening(false);
       setMicError("No se ha podido activar el micrófono.");
     }
   }
 
+  function toggleDictation() {
+    if (wantRef.current) {
+      // Segundo toque: deja de escuchar, pero lo que ya se ha dicho se vuelca al cuadro.
+      wantRef.current = false;
+      window.clearTimeout(restartRef.current);
+      if (recRef.current) recRef.current.stop();
+      else setListening(false);
+      return;
+    }
+    if (!speechCtor()) return;
+    setMicError("");
+    wantRef.current = true;
+    setListening(true);
+    listenOnce();
+  }
+
   function stopDictation() {
-    recRef.current?.abort();
+    wantRef.current = false;
+    window.clearTimeout(restartRef.current);
+    const rec = recRef.current;
     recRef.current = null;
+    if (rec) {
+      rec.onend = null;
+      rec.abort();
+    }
     setListening(false);
     setInterim("");
   }
@@ -813,7 +862,7 @@ export default function Home() {
         )}
         {listening && (
           <div className="dictation">
-            <span className="rec-dot" /> Escuchando… {interim && <em>{interim}</em>}
+            <span className="rec-dot" /> Escuchando. Toca el botón rojo para parar. {interim && <em>{interim}</em>}
           </div>
         )}
         {micError && <div className="hint err">{micError}</div>}
@@ -860,7 +909,7 @@ export default function Home() {
               aria-pressed={listening}
               onClick={toggleDictation}
             >
-              {Icon.mic}
+              {listening ? Icon.stop : Icon.mic}
             </button>
           )}
           <button
