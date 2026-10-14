@@ -213,12 +213,12 @@ const Icon = {
   history: svgIcon(<><circle className="f" cx="12" cy="12" r="8.5" /><path className="l" d="M3.5 12a8.5 8.5 0 102.5-6L3.5 8.5M3.5 4v4.5H8" /><path className="d" d="M12 7.5V12l3 2" /></>),
 };
 
-// Logo de PLCDoctor (robot de mantenimiento con lupa), siempre sobre su ficha blanca.
-function Logo({ size = "" }: { size?: string }) {
+// Logo de PLCDoctor: el robot de mantenimiento con lupa. En la cabecera oscura va la versión clara.
+function Logo({ size = "", dark = false }: { size?: string; dark?: boolean }) {
   return (
-    <span className={`logo ${size}`}>
+    <span className={`logo ${size}${dark ? " dark" : ""}`}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src="/logo_robot.png" alt="PLCDoctor" />
+      <img src={dark ? "/plcdoctor_logo_oscuro.svg" : "/plcdoctor_logo.svg"} alt="PLCDoctor" />
     </span>
   );
 }
@@ -972,7 +972,7 @@ export default function Home() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <Logo />
+          <Logo dark />
           <div>
             <div className="brand-name">PLC<span>Doctor</span></div>
             <div className="brand-sub"><i className="led" /> Asistente de diagnóstico de averías</div>
