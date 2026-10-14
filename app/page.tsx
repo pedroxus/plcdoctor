@@ -5,7 +5,6 @@ import { marked } from "marked";
 import { extractInstructions, type Instruction } from "@/lib/instructions";
 import { candidatesFor, fileHash, findExact, saveToHistory, type HistoryEntry } from "@/lib/history";
 import PdfPreview from "./PdfPreview";
-import { LOGO_SVG, LOGO_VIEWBOX } from "@/lib/logo";
 
 /* ---------- Tipos ---------- */
 
@@ -214,11 +213,12 @@ const Icon = {
   history: svgIcon(<><circle className="f" cx="12" cy="12" r="8.5" /><path className="l" d="M3.5 12a8.5 8.5 0 102.5-6L3.5 8.5M3.5 4v4.5H8" /><path className="d" d="M12 7.5V12l3 2" /></>),
 };
 
-// Robot doctor en busto, siempre sobre su ficha blanca.
+// Logo de PLCDoctor (robot de mantenimiento con lupa), siempre sobre su ficha blanca.
 function Logo({ size = "" }: { size?: string }) {
   return (
     <span className={`logo ${size}`}>
-      <svg viewBox={LOGO_VIEWBOX} role="img" aria-label="PLCDoctor" dangerouslySetInnerHTML={{ __html: LOGO_SVG }} />
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/logo_robot.png" alt="PLCDoctor" />
     </span>
   );
 }
